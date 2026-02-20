@@ -40,7 +40,7 @@ INDEX_HTML = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Doll Training Assistant</title>
+  <title>Good Girl Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -135,7 +135,7 @@ INDEX_HTML = """
 </head>
 <body>
   <div class="container">
-    <h1>Doll Training Assistant</h1>
+    <h1>Good Girl Assistant</h1>
     <p class="sub">Your daily plan from Tumblr commitments</p>
     <nav>
       <a href="{{ url_for('index') }}">Today</a>
@@ -265,7 +265,7 @@ SYNC_HTML = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sync — Doll Training Assistant</title>
+  <title>Sync — Good Girl Assistant</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root { --bg: #0f0e14; --surface: #1a1922; --border: #2d2a3a; --text: #e8e4ef; --muted: #8b8499; --accent: #c49ae8; }
@@ -320,7 +320,7 @@ IMPORT_HTML = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Import — Doll Training Assistant</title>
+  <title>Import — Good Girl Assistant</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root { --bg: #0f0e14; --surface: #1a1922; --border: #2d2a3a; --text: #e8e4ef; --muted: #8b8499; --accent: #c49ae8; }
