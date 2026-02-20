@@ -1,6 +1,6 @@
-# Doll Training Assistant
+# Good Girl Assistant
 
-An app that pulls your Tumblr posts (especially **90 Day Doll Training** style posts), detects commitments, and turns them into reminders, daily schedules, counters, streaks, and punishment triggers. It acts like an AI assistant that tells you what to do each day.
+An app that pulls your Tumblr posts (especially **Training** style posts), detects commitments, and turns them into reminders, daily schedules, counters, streaks, and punishment triggers. It acts like an AI assistant that tells you what to do each day.
 
 ## What it does
 
@@ -27,7 +27,7 @@ An app that pulls your Tumblr posts (especially **90 Day Doll Training** style p
 
 2. **Create a virtualenv and install deps:**
    ```bash
-   cd doll-training-assistant
+   cd Good-Girl-Assistant
    python -m venv .venv
    .venv\Scripts\activate   # Windows
    pip install -r requirements.txt
