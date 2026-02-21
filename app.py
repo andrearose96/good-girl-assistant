@@ -5,6 +5,7 @@ from datetime import date
 
 from flask import Flask, render_template_string, request, jsonify, redirect, url_for, session
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import tumblr_configured, tumblr_consumer_configured
 from db import init_db, set_setting
@@ -35,6 +36,8 @@ from assistant import (
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-in-production")
 CORS(app)
+# So url_for(..., _external=True) uses https when behind Render's proxy
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 init_db()
 
@@ -518,21 +521,26 @@ def tumblr_connect():
     """Start Tumblr OAuth: redirect user to Tumblr to authorize, then callback saves token."""
     if not tumblr_consumer_configured():
         return redirect(url_for("sync_page"))
-    from requests_oauthlib import OAuth1Session
-    from config import TUMBLR_CONSUMER_KEY, TUMBLR_CONSUMER_SECRET
-    callback_uri = url_for("tumblr_callback", _external=True)
-    oauth = OAuth1Session(
-        TUMBLR_CONSUMER_KEY,
-        client_secret=TUMBLR_CONSUMER_SECRET,
-        callback_uri=callback_uri,
-    )
     try:
+        from requests_oauthlib import OAuth1Session
+        from config import TUMBLR_CONSUMER_KEY, TUMBLR_CONSUMER_SECRET
+        # Use env callback URL if set (e.g. on Render), else build from request so it's https
+        callback_uri = os.getenv("TUMBLR_CALLBACK_URL", "").strip()
+        if not callback_uri:
+            callback_uri = url_for("tumblr_callback", _external=True)
+        oauth = OAuth1Session(
+            TUMBLR_CONSUMER_KEY,
+            client_secret=TUMBLR_CONSUMER_SECRET,
+            callback_uri=callback_uri,
+        )
         oauth.fetch_request_token("https://www.tumblr.com/oauth/request_token")
+        authorization_url = oauth.authorization_url("https://www.tumblr.com/oauth/authorize")
+        session["tumblr_request_token"] = (oauth.token, oauth.token_secret)
+        return redirect(authorization_url)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return redirect(url_for("sync_page", tumblr_error="1"))
-    authorization_url = oauth.authorization_url("https://www.tumblr.com/oauth/authorize")
-    session["tumblr_request_token"] = (oauth.token, oauth.token_secret)
-    return redirect(authorization_url)
 
 
 @app.route("/tumblr/callback")
