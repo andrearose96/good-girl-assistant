@@ -318,9 +318,12 @@ SYNC_HTML = """
         <button type="submit" class="btn" style="margin-top:0.75rem;">Sync</button>
       </form>
       {% elif tumblr_consumer_configured %}
-      <p>Sign in with Tumblr to sync. First, in your <a href="https://www.tumblr.com/oauth/apps" target="_blank">Tumblr app</a>, set <strong>Callback URL</strong> to:</p>
+      <p><strong>How it works:</strong> You're not opening any link in the Tumblr app. We sync by having you sign in once in a <strong>browser</strong> (on your phone, use Chrome or Safari). Tumblr will send you back here automatically after you allow access.</p>
+      <p>1. In your <a href="https://www.tumblr.com/oauth/apps" target="_blank">Tumblr app settings</a> (on the website), set <strong>Default callback URL</strong> to this exact value (copy it, don't open it):</p>
       <p><code style="word-break:break-all; font-size:0.8rem;">{{ tumblr_callback_url }}</code></p>
+      <p>2. Click the button below. You'll go to Tumblr to allow access, then come back here. <strong>On phone:</strong> use your browser (not an in-app viewer). If you're not redirected back, open this site again and check Sync—you may already be signed in.</p>
       <p><a href="{{ url_for('tumblr_connect') }}" class="btn">Sign in with Tumblr to sync</a></p>
+      <p class="sub" style="margin-top:0.5rem;">Or open this in your browser (handy on phone): <a href="{{ tumblr_connect_url }}">{{ tumblr_connect_url }}</a></p>
       {% else %}
       <p>Tumblr sync isn't available on this server.</p>
       <p><strong>If you're the deployer:</strong> On Render, go to your service → <strong>Environment</strong> → add two variables (separately, not a file): <code>TUMBLR_CONSUMER_KEY</code> and <code>TUMBLR_CONSUMER_SECRET</code>. Save and <strong>redeploy</strong> so the app picks them up.</p>
@@ -614,6 +617,7 @@ def sync_page():
     tumblr_error = request.args.get("tumblr_error")
     already_signed_in = request.args.get("already_signed_in")
     tumblr_callback_url = url_for("tumblr_callback", _external=True) if tumblr_consumer_configured() else ""
+    tumblr_connect_url = url_for("tumblr_connect", _external=True) if tumblr_consumer_configured() else ""
     return render_template_string(
         SYNC_HTML,
         tumblr_configured=tumblr_configured(),
@@ -622,6 +626,7 @@ def sync_page():
         tumblr_error=tumblr_error,
         already_signed_in=already_signed_in,
         tumblr_callback_url=tumblr_callback_url,
+        tumblr_connect_url=tumblr_connect_url,
         blog=blog,
         result=result,
     )
