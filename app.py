@@ -306,11 +306,16 @@ SYNC_HTML = """
       {% if tumblr_error %}
       <p class="err">Sign-in failed. In your Tumblr app settings, set the <strong>Callback URL</strong> to the URL shown below, then try again.</p>
       {% endif %}
+      {% if already_signed_in %}
+      <p class="result" style="color: var(--success);">You're already signed in. Use the form below to sync.</p>
+      {% endif %}
       {% if tumblr_configured %}
+      <p class="sub" style="margin-bottom:0.5rem;">Your Tumblr connection is stored so we don't hit the OAuth limit. To keep it across deploys (e.g. on Render), use a persistent disk for <code>data/</code> or set <code>TUMBLR_OAUTH_TOKEN</code> and <code>TUMBLR_OAUTH_SECRET</code> in the server environment.</p>
       <form method="post" action="{{ url_for('sync_page') }}">
         <label for="blog">Blog to sync (optional)</label>
         <input type="text" id="blog" name="blog" placeholder="Leave blank to sync your blog, or paste a URL (e.g. andrearose96.tumblr.com) or name" value="{{ blog or '' }}">
-        <button type="submit" class="btn">Sync</button>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;"><input type="checkbox" name="force_fetch" value="1"> Force full sync (ignore cooldown; uses more of your Tumblr limit)</label>
+        <button type="submit" class="btn" style="margin-top:0.75rem;">Sync</button>
       </form>
       {% elif tumblr_consumer_configured %}
       <p>Sign in with Tumblr to sync. First, in your <a href="https://www.tumblr.com/oauth/apps" target="_blank">Tumblr app</a>, set <strong>Callback URL</strong> to:</p>
@@ -324,7 +329,11 @@ SYNC_HTML = """
     </div>
     {% if result %}
     <div class="card result">
+      {% if result.used_cache %}
+      <p class="result" style="color: var(--muted);">Used cached data (no new API call). Processed {{ result.new_commitments }} new commitment(s). Check "Force full sync" to fetch from Tumblr again.</p>
+      {% else %}
       Posts fetched: {{ result.posts_fetched }} · New commitments: {{ result.new_commitments }}{% if result.pending_review is defined %} · Pending review: {{ result.pending_review }}{% endif %}
+      {% endif %}
       {% for e in result.errors %}
       <p class="err">{{ e }}</p>
       {% endfor %}
@@ -521,6 +530,9 @@ def tumblr_connect():
     """Start Tumblr OAuth: redirect user to Tumblr to authorize, then callback saves token."""
     if not tumblr_consumer_configured():
         return redirect(url_for("sync_page"))
+    # Reuse stored tokens so we don't burn OAuth request limit
+    if tumblr_configured():
+        return redirect(url_for("sync_page", already_signed_in="1"))
     try:
         from requests_oauthlib import OAuth1Session
         from config import TUMBLR_CONSUMER_KEY, TUMBLR_CONSUMER_SECRET
@@ -594,11 +606,13 @@ def sync_page():
         if not blog and tumblr_configured():
             from tumblr_client import get_authenticated_user_primary_blog
             blog = get_authenticated_user_primary_blog()
-        result = sync_tumblr(blog=blog or None)
+        force_fetch = request.form.get("force_fetch") == "1"
+        result = sync_tumblr(blog=blog or None, force_fetch=force_fetch)
         if not result.get("errors") and result.get("posts_fetched"):
             return redirect(url_for("index"))
     tumblr_connected = request.args.get("tumblr_connected")
     tumblr_error = request.args.get("tumblr_error")
+    already_signed_in = request.args.get("already_signed_in")
     tumblr_callback_url = url_for("tumblr_callback", _external=True) if tumblr_consumer_configured() else ""
     return render_template_string(
         SYNC_HTML,
@@ -606,6 +620,7 @@ def sync_page():
         tumblr_consumer_configured=tumblr_consumer_configured(),
         tumblr_connected=tumblr_connected,
         tumblr_error=tumblr_error,
+        already_signed_in=already_signed_in,
         tumblr_callback_url=tumblr_callback_url,
         blog=blog,
         result=result,

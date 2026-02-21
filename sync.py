@@ -3,12 +3,14 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from config import TUMBLR_BLOG
-from db import get_conn, init_db, now_iso
+from db import get_conn, init_db, now_iso, get_setting, set_setting
 from parser import commitments_from_post_body, Commitment, is_past_time_bound_event
 from tumblr_client import fetch_posts
 
 # Only process posts from the last N days so old events (e.g. last year's Locktober) are skipped
 RECENT_POST_DAYS = 120
+# Don't call Tumblr API more than once per blog per this many minutes (saves rate limit)
+SYNC_COOLDOWN_MINUTES = 45
 
 
 def _post_date_within_days(created_at, days: int) -> bool:
@@ -143,28 +145,59 @@ def _derive_punishment(cur, c: Commitment, cid: int):
     )
 
 
-def sync_tumblr(blog: Optional[str] = None, max_posts: int = 500) -> dict:
-    """Fetch posts from Tumblr, store, then process only unprocessed posts. Returns {posts_fetched, new_commitments, pending_review, errors}."""
+def _sync_cooldown_key(blog: str) -> str:
+    return "tumblr_last_fetch:" + (blog or "").replace(".tumblr.com", "").strip().lower()
+
+
+def sync_tumblr(blog: Optional[str] = None, max_posts: int = 500, force_fetch: bool = False) -> dict:
+    """Fetch posts from Tumblr (or use cache if in cooldown), store, then process only unprocessed posts.
+    Returns {posts_fetched, new_commitments, pending_review, errors, used_cache?, cooldown_until?}."""
     init_db()
     blog = (blog or TUMBLR_BLOG or "").strip()
+    if ".tumblr.com" in blog:
+        blog = blog.replace(".tumblr.com", "").strip()
     result = {"posts_fetched": 0, "new_commitments": 0, "pending_review": 0, "errors": []}
     if not blog:
         result["errors"].append("Enter a blog name or URL (e.g. andrearose96 or https://andrearose96.tumblr.com), or leave blank to sync your own blog.")
         return result
-    posts = fetch_posts(blog=blog, max_posts=max_posts)
-    if not posts:
-        result["errors"].append("No posts returned (check API keys and blog name)")
-        return result
-    if posts and "error" in posts[0]:
-        result["errors"].append(posts[0].get("error", "Tumblr API error"))
-        return result
+
+    # Cooldown: don't hit Tumblr API if we fetched this blog recently (saves OAuth/API rate limit)
+    used_cache = False
+    cooldown_key = _sync_cooldown_key(blog)
+    if not force_fetch:
+        last_at = get_setting(cooldown_key)
+        if last_at:
+            try:
+                last = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+                last_naive = last.replace(tzinfo=None) if last.tzinfo else last
+                delta_sec = (datetime.utcnow() - last_naive).total_seconds()
+                if delta_sec < SYNC_COOLDOWN_MINUTES * 60:
+                    used_cache = True
+                    result["used_cache"] = True
+            except Exception:
+                pass
+
+    posts = []
+    if not used_cache:
+        posts = fetch_posts(blog=blog, max_posts=max_posts)
+        if not posts:
+            result["errors"].append("No posts returned (check API keys and blog name)")
+            return result
+        if posts and "error" in posts[0]:
+            result["errors"].append(posts[0].get("error", "Tumblr API error"))
+            return result
+        set_setting(cooldown_key, now_iso())
+
     conn = get_conn()
     cur = conn.cursor()
     for post in posts:
         result["posts_fetched"] += 1
         _insert_post(cur, post)
     conn.commit()
-    cur.execute("SELECT id, body_text, created_at FROM tumblr_posts WHERE processed = 0")
+    cur.execute(
+        "SELECT id, body_text, created_at FROM tumblr_posts WHERE processed = 0 AND blog_name = ?",
+        (blog,),
+    )
     unprocessed = cur.fetchall()
     for row in unprocessed:
         pid = row[0]
