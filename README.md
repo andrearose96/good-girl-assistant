@@ -4,7 +4,7 @@ An app that pulls your Tumblr posts (especially **Training** style posts), detec
 
 ## What it does
 
-- **Pulls Tumblr** – Sync from **any** Tumblr blog (e.g. andrearose96). OAuth keys required.
+- **Pulls Tumblr** – Sync your blog or any Tumblr profile. Users sign in with Tumblr (no API keys needed for them).
 - **Detects commitments** – Parses patterns like:
   - “I will [task] for N days” / “until X”
   - “Day 47 rule: …”
@@ -33,15 +33,13 @@ An app that pulls your Tumblr posts (especially **Training** style posts), detec
    pip install -r requirements.txt
    ```
 
-3. **Tumblr (optional)**  
-   To sync from Tumblr, create an app at [Tumblr OAuth apps](https://www.tumblr.com/oauth/apps), then copy `.env.example` to `.env` and set:
-   - `TUMBLR_CONSUMER_KEY`
-   - `TUMBLR_CONSUMER_SECRET`
-   - `TUMBLR_OAUTH_TOKEN`
-   - `TUMBLR_OAUTH_SECRET`
-   - `TUMBLR_BLOG` (optional default; you can also type any blog name on the Sync page, e.g. `andrearose96`)
+3. **Tumblr sync (optional, for deployers)**  
+   To let *your users* sync from Tumblr, set **once** in your environment (e.g. on Render or in `.env`):
+   - `TUMBLR_CONSUMER_KEY` and `TUMBLR_CONSUMER_SECRET` from a [Tumblr OAuth app](https://www.tumblr.com/oauth/apps) you create.  
+   Then in that app, set the callback URL to `https://your-domain.com/tumblr/callback`.  
+   After that, **users never touch keys**—they just click “Sign in with Tumblr” on the Sync page.
 
-   You can still use the app **without** Tumblr: use **Import text** to paste a post or rules and it will parse commitments from that.
+   Without these, the Sync page shows “Tumblr sync isn’t available” and users can use **Import text** instead.
 
 4. **Run the app:**
    ```bash
@@ -52,7 +50,7 @@ An app that pulls your Tumblr posts (especially **Training** style posts), detec
 ## Usage
 
 - **Today** – Main page: today’s plan, schedule, reminders, counters, streaks, and punishment rules. Use “Done” to mark items and “+1” / “Log today” for counters and streaks.
-- **Sync Tumblr** – Enter any Tumblr blog name (e.g. andrearose96), fetch posts, and extract commitments (needs `.env` keys).
+- **Sync Tumblr** – Sign in with Tumblr, then sync your blog or any profile by URL/name.
 - **Import text** – Paste any block of text; the parser will detect commitments and add them to your schedule/reminders/counters/streaks.
 
 Data is stored in `data/commitments.db` (SQLite).

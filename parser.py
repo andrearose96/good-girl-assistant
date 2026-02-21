@@ -2,6 +2,7 @@
 import re
 from dataclasses import dataclass
 from typing import Optional
+from datetime import date
 
 
 @dataclass
@@ -95,7 +96,66 @@ PATTERNS = [
     ), "schedule", 0.95, lambda m: {
         "task_description": m.group(1).strip(),
     }),
+    # "Ritual: ..." / "Rituals: ..."
+    (re.compile(
+        r"Rituals?\s*[:\-]\s*([^\n]+)",
+        re.I,
+    ), "schedule", 0.9, lambda m: {
+        "task_description": m.group(1).strip(),
+    }),
+    # "Rule: ..." (standalone, any rule)
+    (re.compile(
+        r"Rule\s*[:\-]\s*([^\n.]+?)(?:\.|$)",
+        re.I,
+    ), "schedule", 0.85, lambda m: {
+        "task_description": m.group(1).strip(),
+    }),
+    # "Must [task]" / "I must [task]"
+    (re.compile(
+        r"\b(?:I\s+)?must\s+([^.?!\n]+?)[.?!]?$",
+        re.I,
+    ), "reminder", 0.8, lambda m: {
+        "task_description": m.group(1).strip(),
+    }),
+    # "Task: ..." / "Tasks: ..."
+    (re.compile(
+        r"Tasks?\s*[:\-]\s*([^\n]+)",
+        re.I,
+    ), "schedule", 0.9, lambda m: {
+        "task_description": m.group(1).strip(),
+    }),
+    # "Commitment: ..."
+    (re.compile(
+        r"Commitment\s*[:\-]\s*([^\n]+)",
+        re.I,
+    ), "reminder", 0.9, lambda m: {
+        "task_description": m.group(1).strip(),
+    }),
 ]
+
+# Time-bound event names that we skip when they're in the past (avoid last year's Locktober etc.)
+PAST_EVENT_PATTERNS = [
+    (re.compile(r"\bLocktober\b", re.I), 10),   # October
+    (re.compile(r"\bNo\s*Nut\s*November\b", re.I), 11),
+    (re.compile(r"\bNNN\b", re.I), 11),
+    (re.compile(r"\bDenial\s*December\b", re.I), 12),
+]
+
+
+def _is_past_time_bound_event(raw_text: str) -> bool:
+    """True if text is about a time-bound event (e.g. Locktober) and we're not in that month now."""
+    now = date.today()
+    for pattern, event_month in PAST_EVENT_PATTERNS:
+        if pattern.search(raw_text) and now.month != event_month:
+            return True
+    return False
+
+
+def is_past_time_bound_event(raw_text: str) -> bool:
+    """Public helper: True if this commitment should be hidden (past time-bound event)."""
+    if not raw_text or not isinstance(raw_text, str):
+        return False
+    return _is_past_time_bound_event(raw_text.strip())
 
 
 def extract_commitments(text: str) -> list[Commitment]:
@@ -103,8 +163,8 @@ def extract_commitments(text: str) -> list[Commitment]:
     if not text or not text.strip():
         return []
     commitments = []
-    # Normalize: one sentence per line for line-based patterns
-    lines = re.split(r"[.\n]+", text)
+    # Normalize: split on newlines and sentence endings so we don't miss rules in lists
+    lines = re.split(r"[\n.;]+", text)
     seen_raw = set()
     for line in lines:
         line = line.strip()
@@ -116,6 +176,8 @@ def extract_commitments(text: str) -> list[Commitment]:
                 continue
             raw = line.strip()
             if raw in seen_raw:
+                continue
+            if _is_past_time_bound_event(raw):
                 continue
             seen_raw.add(raw)
             try:

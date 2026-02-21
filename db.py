@@ -162,9 +162,38 @@ def init_db():
         )
     """)
 
+    # App settings (e.g. Tumblr OAuth token/secret from in-app Connect flow)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 
 def now_iso():
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def get_setting(key: str) -> Optional[str]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)""",
+        (key, value, now_iso()),
+    )
+    conn.commit()
+    conn.close()

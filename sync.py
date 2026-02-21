@@ -4,8 +4,30 @@ from typing import Optional
 
 from config import TUMBLR_BLOG
 from db import get_conn, init_db, now_iso
-from parser import commitments_from_post_body, Commitment
+from parser import commitments_from_post_body, Commitment, is_past_time_bound_event
 from tumblr_client import fetch_posts
+
+# Only process posts from the last N days so old events (e.g. last year's Locktober) are skipped
+RECENT_POST_DAYS = 120
+
+
+def _post_date_within_days(created_at, days: int) -> bool:
+    """True if post created_at is within the last `days` days. Handles timestamp or ISO string."""
+    if created_at is None or created_at == "":
+        return True
+    try:
+        s = str(created_at).strip()
+        if isinstance(created_at, (int, float)) or s.isdigit():
+            ts = int(float(created_at))
+            post_dt = datetime.utcfromtimestamp(ts)
+        else:
+            # ISO "2024-10-01T12:00:00" or "2024-10-01 12:00:00 GMT"
+            s = s.replace("T", " ").replace("Z", "").strip()
+            s = s[:19]
+            post_dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        return (datetime.utcnow() - post_dt).days <= days
+    except Exception:
+        return True
 
 
 def _insert_post(cur, post: dict):
@@ -121,13 +143,13 @@ def _derive_punishment(cur, c: Commitment, cid: int):
     )
 
 
-def sync_tumblr(blog: Optional[str] = None, max_posts: int = 100) -> dict:
+def sync_tumblr(blog: Optional[str] = None, max_posts: int = 500) -> dict:
     """Fetch posts from Tumblr, store, then process only unprocessed posts. Returns {posts_fetched, new_commitments, pending_review, errors}."""
     init_db()
     blog = (blog or TUMBLR_BLOG or "").strip()
     result = {"posts_fetched": 0, "new_commitments": 0, "pending_review": 0, "errors": []}
     if not blog:
-        result["errors"].append("Enter a Tumblr blog name (e.g. andrearose96)—works for any profile.")
+        result["errors"].append("Enter a blog name or URL (e.g. andrearose96 or https://andrearose96.tumblr.com), or leave blank to sync your own blog.")
         return result
     posts = fetch_posts(blog=blog, max_posts=max_posts)
     if not posts:
@@ -142,9 +164,15 @@ def sync_tumblr(blog: Optional[str] = None, max_posts: int = 100) -> dict:
         result["posts_fetched"] += 1
         _insert_post(cur, post)
     conn.commit()
-    cur.execute("SELECT id, body_text FROM tumblr_posts WHERE processed = 0")
+    cur.execute("SELECT id, body_text, created_at FROM tumblr_posts WHERE processed = 0")
     unprocessed = cur.fetchall()
-    for (pid, body_text) in unprocessed:
+    for row in unprocessed:
+        pid = row[0]
+        body_text = row[1]
+        created_at = row[2] if len(row) > 2 else None
+        if not _post_date_within_days(created_at, RECENT_POST_DAYS):
+            cur.execute("UPDATE tumblr_posts SET processed = 1 WHERE id = ?", (pid,))
+            continue
         body = body_text or ""
         for c, src_id in commitments_from_post_body(body, pid):
             cid = _ensure_commitment_id(cur, c, src_id, status=None)
@@ -166,81 +194,98 @@ def sync_tumblr(blog: Optional[str] = None, max_posts: int = 100) -> dict:
 
 def generate_schedule_for_date(date_str: str) -> int:
     """Generate schedule rows for date from active daily commitments. Idempotent (INSERT OR IGNORE). Never touches done rows."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """SELECT id, commitment_id, title, notes FROM schedule_items si
-           JOIN commitments c ON c.id = si.commitment_id AND c.status = 'active'
-           WHERE si.date = ''"""
-    )
-    templates = cur.fetchall()
-    inserted = 0
-    for row in templates:
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
         cur.execute(
-            """INSERT OR IGNORE INTO schedule_items (commitment_id, date, title, notes, completed, created_at)
-               VALUES (?, ?, ?, ?, 0, ?)""",
-            (row[1], date_str, row[2], row[3] or "", now_iso()),
+            """SELECT id, commitment_id, title, notes FROM schedule_items si
+               JOIN commitments c ON c.id = si.commitment_id AND COALESCE(c.status, 'active') = 'active'
+               WHERE si.date = ''"""
         )
-        if cur.rowcount:
-            inserted += 1
-    conn.commit()
-    conn.close()
-    return inserted
+        templates = cur.fetchall()
+        inserted = 0
+        for row in templates:
+            cur.execute(
+                """INSERT OR IGNORE INTO schedule_items (commitment_id, date, title, notes, completed, created_at)
+                   VALUES (?, ?, ?, ?, 0, ?)""",
+                (row[1], date_str, row[2], row[3] or "", now_iso()),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
+        return inserted
+    except Exception:
+        raise
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def get_schedule_items_for_date(date: str):
-    """Get schedule items that apply to a given date (YYYY-MM-DD). Only from active commitments."""
+    """Get schedule items that apply to a given date (YYYY-MM-DD). Only from active commitments; hide past time-bound events (e.g. Locktober)."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT si.id, si.commitment_id, si.date, si.title, si.notes, si.completed
+        """SELECT si.id, si.commitment_id, si.date, si.title, si.notes, si.completed, c.raw_text
            FROM schedule_items si
            JOIN commitments c ON c.id = si.commitment_id AND c.status = 'active'
            WHERE (si.date = ? OR si.date = '') ORDER BY si.id""",
         (date,),
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return [r for r in rows if not is_past_time_bound_event(r.get("raw_text") or "")]
 
 
 def get_reminders_today():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT r.id, r.commitment_id, r.title, r.at_time, r.recurrence, r.next_due, r.done
+        """SELECT r.id, r.commitment_id, r.title, r.at_time, r.recurrence, r.next_due, r.done, c.raw_text
            FROM reminders r JOIN commitments c ON c.id = r.commitment_id AND c.status = 'active'
            WHERE r.done = 0 ORDER BY r.id"""
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return [r for r in rows if not is_past_time_bound_event(r.get("raw_text") or "")]
 
 
 def get_counters():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT co.id, co.commitment_id, co.name, co.current_value, co.target_value, co.unit, co.start_date, co.last_updated
+        """SELECT co.id, co.commitment_id, co.name, co.current_value, co.target_value, co.unit, co.start_date, co.last_updated, c.raw_text
            FROM counters co JOIN commitments c ON c.id = co.commitment_id AND c.status = 'active'
            ORDER BY co.id"""
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return [r for r in rows if not is_past_time_bound_event(r.get("raw_text") or "")]
 
 
 def get_streaks():
-    """Streaks from streaks table (legacy) plus commitment-based (current_streak on commitments). Legacy rows have streak_id for 'Log today' button."""
+    """Streaks from streaks table (legacy) plus commitment-based. Hide past time-bound events (e.g. Locktober)."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT s.id, s.commitment_id, s.name, s.current_streak, s.longest_streak, s.last_activity_date
+        """SELECT s.id, s.commitment_id, s.name, s.current_streak, s.longest_streak, s.last_activity_date, c.raw_text
            FROM streaks s JOIN commitments c ON c.id = s.commitment_id AND c.status = 'active'
            ORDER BY s.id"""
     )
     legacy = [dict(r) for r in cur.fetchall()]
+    legacy = [r for r in legacy if not is_past_time_bound_event(r.get("raw_text") or "")]
     for row in legacy:
         row["streak_id"] = row["id"]
     cur.execute(
-        """SELECT id AS commitment_id, task_description AS name, current_streak, best_streak AS longest_streak, last_completed_date AS last_activity_date
+        """SELECT id AS commitment_id, task_description AS name, current_streak, best_streak AS longest_streak, last_completed_date AS last_activity_date, raw_text
            FROM commitments WHERE status = 'active' AND (current_streak > 0 OR last_completed_date IS NOT NULL)"""
     )
     from_commitments = [dict(r) for r in cur.fetchall()]
+    from_commitments = [r for r in from_commitments if not is_past_time_bound_event(r.get("raw_text") or "")]
     seen_cid = {row["commitment_id"] for row in from_commitments}
     for row in legacy:
         if row["commitment_id"] not in seen_cid:
@@ -257,11 +302,13 @@ def get_punishment_triggers():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT pt.id, pt.commitment_id, pt.condition_text, pt.action_text, pt.active
+        """SELECT pt.id, pt.commitment_id, pt.condition_text, pt.action_text, pt.active, c.raw_text
            FROM punishment_triggers pt JOIN commitments c ON c.id = pt.commitment_id AND c.status = 'active'
            WHERE pt.active = 1"""
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return [r for r in rows if not is_past_time_bound_event(r.get("raw_text") or "")]
 
 
 def get_pending_commitments():
@@ -286,3 +333,50 @@ def set_commitment_status(commitment_id: int, status: str) -> bool:
     ok = cur.rowcount > 0
     conn.close()
     return ok
+
+
+def set_commitment_status_bulk(ids: list[int], status: str) -> int:
+    """Set status for multiple commitments. Returns count updated."""
+    if status not in ("active", "rejected") or not ids:
+        return 0
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholders = ",".join("?" * len(ids))
+    cur.execute(f"UPDATE commitments SET status = ? WHERE id IN ({placeholders})", [status] + ids)
+    conn.commit()
+    n = cur.rowcount
+    conn.close()
+    return n
+
+
+def get_all_commitments_for_manage(
+    source_filter: Optional[str] = None,
+    status_filter: Optional[str] = None,
+):
+    """All commitments for the Manage page, optionally filtered by source (tumblr|import) and status (active|rejected|pending)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    sql = """SELECT id, raw_text, kind, status, source_post_id, created_at
+             FROM commitments WHERE 1=1"""
+    params: list = []
+    if source_filter == "tumblr":
+        sql += " AND source_post_id IS NOT NULL AND source_post_id != '' AND source_post_id NOT LIKE 'import:%'"
+    elif source_filter == "import":
+        sql += " AND (source_post_id IS NULL OR source_post_id = '' OR source_post_id LIKE 'import:%')"
+    if status_filter and status_filter != "all":
+        if status_filter == "pending":
+            sql += " AND (status IS NULL OR status = 'pending')"
+        else:
+            sql += " AND status = ?"
+            params.append(status_filter)
+    sql += " ORDER BY id DESC"
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        src = (d.get("source_post_id") or "")
+        d["source_label"] = "Tumblr" if src and not src.startswith("import:") else "Import"
+        out.append(d)
+    return out
